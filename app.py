@@ -11,7 +11,7 @@ PARTNER_ID = int(os.getenv("PARTNER_ID", "0"))
 PARTNER_KEY = os.getenv("PARTNER_KEY", "")
 SHOP_ID = int(os.getenv("SHOP_ID", "0"))
 SMS_API_KEY = os.getenv("SMS_API_KEY", "")
-COUNTRY_CODE = int(os.getenv("COUNTRY_CODE", "7"))  # default = 7
+COUNTRY_CODE = int(os.getenv("COUNTRY_CODE", "6"))
 
 # Mapping produk Shopee ke service SMS-Activate
 SERVICE_MAP = {
@@ -21,7 +21,7 @@ SERVICE_MAP = {
     "tealive": "avb"
 }
 
-# Logo URL (boleh tukar link ikut suka)
+# Logo URL (boleh tukar ikut suka)
 LOGO_MAP = {
     "zus": "https://seeklogo.com/images/Z/zus-coffee-logo.png",
     "tealive": "https://seeklogo.com/images/T/tealive-logo.png",
@@ -37,7 +37,7 @@ HTML_FORM = """
 <title>Redeem Virtual Number</title>
 <script>
 let activationId = null;
-let countdown = 900; // 15 minit
+let countdown = 120; // 2 minit
 
 function updateTimer() {
   if (countdown > 0) {
@@ -85,30 +85,30 @@ setInterval(checkOTP, 15000); // auto refresh OTP setiap 15 saat
 </form>
 
 {% if product %}
-  <h3>Produk: {{ product }}</h3>
-  {% if logo %}
-    <img src="{{ logo }}" alt="{{ product }}" style="width:120px;height:auto;">
-  {% endif %}
+<h3>Produk: {{ product }}</h3>
+{% if logo %}
+<img src="{{ logo }}" alt="{{ product }}" style="width:120px;height:auto;">
+{% endif %}
 {% endif %}
 
 {% if number %}
-  <h3>Nombor Anda: {{ number }}</h3>
-  <p id="otp">Sedang tunggu OTP...</p>
-  <p id="timer">Masa tinggal: 900s</p>
-  <script>
-    activationId = "{{ activation_id }}";
-    checkOTP();
-  </script>
+<h3>Nombor Anda: {{ number }}</h3>
+<p id="otp">Sedang tunggu OTP...</p>
+<p id="timer">Masa tinggal: 120s</p>
+<script>
+activationId = "{{ activation_id }}";
+checkOTP();
+</script>
 {% endif %}
 
 {% if error %}
-  <p style="color:red">{{ error }}</p>
+<p style="color:red">{{ error }}</p>
 {% endif %}
 </body>
 </html>
 """
 
-# === SHOPEE SIGNATURE ===
+# === SIGNATURE SHOPEE ===
 def make_signature(path, timestamp):
     base_string = f"{PARTNER_ID}{path}{timestamp}"
     return hmac.new(
@@ -137,7 +137,7 @@ def check_order(order_sn):
     except Exception as e:
         return {"error": str(e)}
 
-# === GET VIRTUAL NUMBER ===
+# === GET NUMBER ===
 def get_virtual_number(service, country=COUNTRY_CODE):
     url = f"https://api.sms-activate.org/stubs/handler_api.php?api_key={SMS_API_KEY}&action=getNumber&service={service}&country={country}"
     try:
@@ -149,7 +149,7 @@ def get_virtual_number(service, country=COUNTRY_CODE):
     except Exception:
         return None
 
-# === GET OTP STATUS ===
+# === GET OTP ===
 def get_status(activation_id):
     url = f"https://api.sms-activate.org/stubs/handler_api.php?api_key={SMS_API_KEY}&action=getStatus&id={activation_id}"
     try:
@@ -160,6 +160,7 @@ def get_status(activation_id):
     except Exception:
         return None
 
+# === ROUTES ===
 @app.route("/", methods=["GET", "POST"])
 def redeem():
     number, error, activation_id, product, logo = None, None, None, None, None
@@ -207,6 +208,13 @@ def check_otp():
     otp = get_status(activation_id)
     return jsonify({"code": otp})
 
+# === SHOPEE CALLBACK ENDPOINT ===
+@app.route("/callback")
+def callback():
+    code = request.args.get("code")
+    shop_id = request.args.get("shop_id")
+    return f"Callback berjaya! Code={code}, ShopID={shop_id}"
+
+# === MAIN ===
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))  # Render/Heroku guna PORT env
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)
