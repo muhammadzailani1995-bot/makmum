@@ -1,5 +1,5 @@
 from flask import Flask, request, render_template_string, jsonify
-import time, hmac, hashlib, requests, os
+import time, hmac, hashlib, requests, os, json
 from dotenv import load_dotenv
 
 # === LOAD ENV ===
@@ -13,7 +13,6 @@ SHOP_ID = int(os.getenv("SHOP_ID", "0"))
 SMS_API_KEY = os.getenv("SMS_API_KEY", "")
 COUNTRY_CODE = int(os.getenv("COUNTRY_CODE", "6"))
 
-# Simpan token Shopee dalam memory (sementara)
 ACCESS_TOKEN = None
 REFRESH_TOKEN = None
 
@@ -33,12 +32,19 @@ LOGO_MAP = {
     "chagee": "https://seeklogo.com/images/C/chagee-logo.png"
 }
 
-# === HTML ===
+# === HTML FORM ===
 HTML_FORM = """
 <!DOCTYPE html>
 <html>
 <head>
 <title>Redeem Virtual Number</title>
+<style>
+body { text-align:center; font-family:Arial; }
+h2 { font-size:28px; margin-top:30px; }
+h3 { font-size:24px; margin-top:20px; }
+p, select, input, button { font-size:20px; margin:10px; }
+#otp, #timer { font-size:22px; font-weight:bold; color:darkblue; }
+</style>
 <script>
 let activationId = null;
 let countdown = 120;
@@ -83,20 +89,21 @@ setInterval(checkOTP, 15000);
 <option value="kfc">KFC</option>
 <option value="chagee">Chagee</option>
 </select>
-<br><br>
+<br>
 <input type="text" name="order_sn" placeholder="Order ID Shopee" required>
+<br>
 <button type="submit">Redeem</button>
 </form>
 
 {% if product %}
 <h3>Produk: {{ product }}</h3>
 {% if logo %}
-<img src="{{ logo }}" alt="{{ product }}" style="width:120px;height:auto;">
+<img src="{{ logo }}" alt="{{ product }}" style="width:140px;height:auto;">
 {% endif %}
 {% endif %}
 
 {% if number %}
-<h3>Nombor Anda: {{ number }}</h3>
+<h3>Nombor Anda: <span style="color:green">{{ number }}</span></h3>
 <p id="otp">Sedang tunggu OTP...</p>
 <p id="timer">Masa tinggal: 120s</p>
 <script>
@@ -106,7 +113,7 @@ checkOTP();
 {% endif %}
 
 {% if error %}
-<p style="color:red">{{ error }}</p>
+<p style="color:red; font-size:22px;">{{ error }}</p>
 {% endif %}
 </body>
 </html>
@@ -121,7 +128,21 @@ def make_signature(path, timestamp, body=""):
         hashlib.sha256
     ).hexdigest()
 
-# === CHECK ORDER ===
+# === SIMPAN TOKEN KE .ENV ===
+def save_token(access_token, refresh_token):
+    lines = []
+    if os.path.exists(".env"):
+        with open(".env", "r") as f:
+            lines = f.readlines()
+
+    lines = [l for l in lines if not l.startswith("ACCESS_TOKEN") and not l.startswith("REFRESH_TOKEN")]
+    lines.append(f"ACCESS_TOKEN={access_token}\n")
+    lines.append(f"REFRESH_TOKEN={refresh_token}\n")
+
+    with open(".env", "w") as f:
+        f.writelines(lines)
+
+# === ORDER CHECK ===
 def check_order(order_sn):
     global ACCESS_TOKEN
     path = "/api/v2/order/get_order_detail"
@@ -147,7 +168,7 @@ def check_order(order_sn):
     except Exception as e:
         return {"error": str(e)}
 
-# === GET NUMBER ===
+# === GET VIRTUAL NUMBER ===
 def get_virtual_number(service, country=COUNTRY_CODE):
     url = f"https://api.sms-activate.org/stubs/handler_api.php?api_key={SMS_API_KEY}&action=getNumber&service={service}&country={country}"
     try:
@@ -159,7 +180,7 @@ def get_virtual_number(service, country=COUNTRY_CODE):
     except Exception:
         return None
 
-# === GET OTP ===
+# === GET STATUS ===
 def get_status(activation_id):
     url = f"https://api.sms-activate.org/stubs/handler_api.php?api_key={SMS_API_KEY}&action=getStatus&id={activation_id}"
     try:
@@ -193,13 +214,13 @@ def redeem():
                         activation_id = vnum["id"]
                         logo = LOGO_MAP.get(product_choice)
                     else:
-                        error = "Gagal tempah nombor (tiada nombor tersedia)."
+                        error = "❌ Gagal tempah nombor (tiada nombor tersedia)."
                 else:
-                    error = f"Produk '{product}' tiada dalam mapping."
+                    error = f"❌ Produk '{product}' tiada dalam mapping."
             except Exception as e:
-                error = f"Ralat proses order: {e}"
+                error = f"❌ Ralat proses order: {e}"
         else:
-            error = f"Gagal dapatkan maklumat order: {order_info.get('message', 'Tidak diketahui')}"
+            error = f"❌ Gagal dapatkan maklumat order."
 
     return render_template_string(
         HTML_FORM,
@@ -216,7 +237,7 @@ def check_otp():
     otp = get_status(activation_id)
     return jsonify({"code": otp})
 
-# === CALLBACK SHOPEE ===
+# === CALLBACK ===
 @app.route("/callback")
 def callback():
     global ACCESS_TOKEN, REFRESH_TOKEN
@@ -225,9 +246,8 @@ def callback():
     shop_id = request.args.get("shop_id")
 
     if not code:
-        return "Callback error: tiada code!"
+        return "<h1 style='color:red;text-align:center;font-size:32px;'>❌ Callback error: tiada code!</h1>"
 
-    # Exchange code for access_token
     path = "/api/v2/auth/token/get"
     url = "https://partner.shopeemobile.com" + path
     timestamp = int(time.time())
@@ -238,22 +258,34 @@ def callback():
         "shop_id": int(shop_id)
     }
 
-    sign = make_signature(path, timestamp, str(body))
+    body_str = json.dumps(body, separators=(',', ':'))
+    sign = make_signature(path, timestamp, body_str)
 
     try:
-        r = requests.post(url, json=body, params={
-            "partner_id": PARTNER_ID,
-            "timestamp": timestamp,
-            "sign": sign
-        }, timeout=10)
+        r = requests.post(
+            url,
+            json=body,
+            params={"partner_id": PARTNER_ID, "timestamp": timestamp, "sign": sign},
+            timeout=10
+        )
 
         data = r.json()
         ACCESS_TOKEN = data.get("access_token")
         REFRESH_TOKEN = data.get("refresh_token")
 
-        return f"Callback berjaya!<br>Shop ID={shop_id}<br>Access Token={ACCESS_TOKEN}<br>Refresh Token={REFRESH_TOKEN}"
+        if ACCESS_TOKEN:
+            save_token(ACCESS_TOKEN, REFRESH_TOKEN)
+
+        return f"""
+        <div style="text-align:center;margin-top:60px;">
+            <h1 style="color:green;font-size:34px;">✅ Callback Berjaya!</h1>
+            <h2 style="font-size:28px;">Shop ID = {shop_id}</h2>
+            <h2 style="font-size:28px;">Access Token = {ACCESS_TOKEN}</h2>
+            <h2 style="font-size:28px;">Refresh Token = {REFRESH_TOKEN}</h2>
+        </div>
+        """
     except Exception as e:
-        return f"Ralat callback: {e}"
+        return f"<h1 style='color:red;text-align:center;font-size:32px;'>❌ Ralat callback: {e}</h1>"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
