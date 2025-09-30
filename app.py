@@ -13,6 +13,10 @@ SHOP_ID = int(os.getenv("SHOP_ID", "0"))
 SMS_API_KEY = os.getenv("SMS_API_KEY", "")
 COUNTRY_CODE = int(os.getenv("COUNTRY_CODE", "6"))
 
+# Simpan token Shopee dalam memory (sementara)
+ACCESS_TOKEN = None
+REFRESH_TOKEN = None
+
 # Mapping produk Shopee ke service SMS-Activate
 SERVICE_MAP = {
     "zus": "aik",
@@ -21,7 +25,7 @@ SERVICE_MAP = {
     "tealive": "avb"
 }
 
-# Logo URL (boleh tukar ikut suka)
+# Logo URL
 LOGO_MAP = {
     "zus": "https://seeklogo.com/images/Z/zus-coffee-logo.png",
     "tealive": "https://seeklogo.com/images/T/tealive-logo.png",
@@ -29,7 +33,7 @@ LOGO_MAP = {
     "chagee": "https://seeklogo.com/images/C/chagee-logo.png"
 }
 
-# === HTML FORM ===
+# === HTML ===
 HTML_FORM = """
 <!DOCTYPE html>
 <html>
@@ -37,51 +41,51 @@ HTML_FORM = """
 <title>Redeem Virtual Number</title>
 <script>
 let activationId = null;
-let countdown = 120; // 2 minit
+let countdown = 120;
 
 function updateTimer() {
-  if (countdown > 0) {
-    countdown--;
-    document.getElementById("timer").innerText = "Masa tinggal: " + countdown + "s";
-  } else {
-    document.getElementById("timer").innerText = "Masa habis!";
-  }
+    if (countdown > 0) {
+        countdown--;
+        document.getElementById("timer").innerText = "Masa tinggal: " + countdown + "s";
+    } else {
+        document.getElementById("timer").innerText = "Masa habis!";
+    }
 }
 
 function checkOTP() {
-  if (activationId && countdown > 0) {
-    fetch("/check_otp?id=" + activationId)
-    .then(r => r.json())
-    .then(data => {
-      if (data.code) {
-        document.getElementById("otp").innerText = "Kod OTP: " + data.code;
-      } else {
-        document.getElementById("otp").innerText = "Sedang tunggu OTP...";
-      }
-    })
-    .catch(err => {
-      document.getElementById("otp").innerText = "Ralat semak OTP!";
-    });
-  }
+    if (activationId && countdown > 0) {
+        fetch("/check_otp?id=" + activationId)
+        .then(r => r.json())
+        .then(data => {
+            if (data.code) {
+                document.getElementById("otp").innerText = "Kod OTP: " + data.code;
+            } else {
+                document.getElementById("otp").innerText = "Sedang tunggu OTP...";
+            }
+        })
+        .catch(err => {
+            document.getElementById("otp").innerText = "Ralat semak OTP!";
+        });
+    }
 }
 
-setInterval(updateTimer, 1000); // update timer setiap 1 saat
-setInterval(checkOTP, 15000); // auto refresh OTP setiap 15 saat
+setInterval(updateTimer, 1000);
+setInterval(checkOTP, 15000);
 </script>
 </head>
 <body>
 <h2>Pilih Produk & Masukkan Order ID Shopee</h2>
 <form method="POST">
-  <select name="product_choice" required>
-    <option value="">-- Pilih Produk --</option>
-    <option value="zus">Zus Coffee</option>
-    <option value="tealive">Tealive</option>
-    <option value="kfc">KFC</option>
-    <option value="chagee">Chagee</option>
-  </select>
-  <br><br>
-  <input type="text" name="order_sn" placeholder="Order ID Shopee" required>
-  <button type="submit">Redeem</button>
+<select name="product_choice" required>
+<option value="">-- Pilih Produk --</option>
+<option value="zus">Zus Coffee</option>
+<option value="tealive">Tealive</option>
+<option value="kfc">KFC</option>
+<option value="chagee">Chagee</option>
+</select>
+<br><br>
+<input type="text" name="order_sn" placeholder="Order ID Shopee" required>
+<button type="submit">Redeem</button>
 </form>
 
 {% if product %}
@@ -109,8 +113,8 @@ checkOTP();
 """
 
 # === SIGNATURE SHOPEE ===
-def make_signature(path, timestamp):
-    base_string = f"{PARTNER_ID}{path}{timestamp}"
+def make_signature(path, timestamp, body=""):
+    base_string = f"{PARTNER_ID}{path}{timestamp}{body}"
     return hmac.new(
         PARTNER_KEY.encode(),
         base_string.encode(),
@@ -119,6 +123,7 @@ def make_signature(path, timestamp):
 
 # === CHECK ORDER ===
 def check_order(order_sn):
+    global ACCESS_TOKEN
     path = "/api/v2/order/get_order_detail"
     url = "https://partner.shopeemobile.com" + path
     timestamp = int(time.time())
@@ -131,8 +136,13 @@ def check_order(order_sn):
         "sign": sign,
         "order_sn_list": [order_sn]
     }
+
+    headers = {}
+    if ACCESS_TOKEN:
+        headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
+
     try:
-        r = requests.post(url, json=payload, timeout=10)
+        r = requests.post(url, json=payload, headers=headers, timeout=10)
         return r.json()
     except Exception as e:
         return {"error": str(e)}
@@ -160,7 +170,6 @@ def get_status(activation_id):
     except Exception:
         return None
 
-# === ROUTES ===
 @app.route("/", methods=["GET", "POST"])
 def redeem():
     number, error, activation_id, product, logo = None, None, None, None, None
@@ -176,7 +185,6 @@ def redeem():
                 product_name = order_info["response"]["order_list"][0]["item_list"][0]["item_name"].lower()
                 product = product_choice if product_choice else product_name
 
-                # cari service code
                 service_code = SERVICE_MAP.get(product_choice)
                 if service_code:
                     vnum = get_virtual_number(service=service_code)
@@ -208,13 +216,44 @@ def check_otp():
     otp = get_status(activation_id)
     return jsonify({"code": otp})
 
-# === SHOPEE CALLBACK ENDPOINT ===
+# === CALLBACK SHOPEE ===
 @app.route("/callback")
 def callback():
+    global ACCESS_TOKEN, REFRESH_TOKEN
+
     code = request.args.get("code")
     shop_id = request.args.get("shop_id")
-    return f"Callback berjaya! Code={code}, ShopID={shop_id}"
 
-# === MAIN ===
+    if not code:
+        return "Callback error: tiada code!"
+
+    # Exchange code for access_token
+    path = "/api/v2/auth/token/get"
+    url = "https://partner.shopeemobile.com" + path
+    timestamp = int(time.time())
+
+    body = {
+        "code": code,
+        "partner_id": PARTNER_ID,
+        "shop_id": int(shop_id)
+    }
+
+    sign = make_signature(path, timestamp, str(body))
+
+    try:
+        r = requests.post(url, json=body, params={
+            "partner_id": PARTNER_ID,
+            "timestamp": timestamp,
+            "sign": sign
+        }, timeout=10)
+
+        data = r.json()
+        ACCESS_TOKEN = data.get("access_token")
+        REFRESH_TOKEN = data.get("refresh_token")
+
+        return f"Callback berjaya!<br>Shop ID={shop_id}<br>Access Token={ACCESS_TOKEN}<br>Refresh Token={REFRESH_TOKEN}"
+    except Exception as e:
+        return f"Ralat callback: {e}"
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
