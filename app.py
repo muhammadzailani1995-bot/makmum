@@ -11,7 +11,7 @@ PARTNER_ID = int(os.getenv("PARTNER_ID", "0"))
 PARTNER_KEY = os.getenv("PARTNER_KEY", "")
 SHOP_ID = int(os.getenv("SHOP_ID", "0"))
 SMS_API_KEY = os.getenv("SMS_API_KEY", "")
-COUNTRY_CODE = int(os.getenv("COUNTRY_CODE", "6"))
+COUNTRY_CODE = int(os.getenv("COUNTRY_CODE", "7"))  # ✅ Malaysia = 7
 
 ACCESS_TOKEN = None
 REFRESH_TOKEN = None
@@ -32,18 +32,45 @@ LOGO_MAP = {
     "chagee": "https://seeklogo.com/images/C/chagee-logo.png"
 }
 
-# === HTML FORM ===
+# === HTML FORM (UI CANTIK + WATERMARK MR.ROBOT) ===
 HTML_FORM = """
 <!DOCTYPE html>
 <html>
 <head>
 <title>Redeem Virtual Number</title>
 <style>
-body { text-align:center; font-family:Arial; }
-h2 { font-size:28px; margin-top:30px; }
-h3 { font-size:24px; margin-top:20px; }
+body {
+    text-align:center;
+    font-family:Arial, sans-serif;
+    background:#f8f8f8;
+    position:relative;
+    min-height:100vh;
+    margin:0;
+    padding:0;
+}
+.watermark {
+    position:fixed;
+    top:50%;
+    left:50%;
+    transform:translate(-50%, -50%);
+    font-size:80px;
+    font-weight:bold;
+    color:rgba(200,200,200,0.15);
+    z-index:-1;
+    pointer-events:none;
+    white-space:nowrap;
+}
+h2 { font-size:30px; margin-top:20px; }
+h3 { font-size:26px; margin-top:15px; }
 p, select, input, button { font-size:20px; margin:10px; }
-#otp, #timer { font-size:22px; font-weight:bold; color:darkblue; }
+#otp, #timer { font-size:24px; font-weight:bold; color:darkblue; }
+.copy-btn {
+    background:#4CAF50; color:white; border:none;
+    padding:5px 12px; font-size:16px; cursor:pointer;
+    border-radius:5px; margin-left:10px;
+}
+.copy-btn:hover { background:#45a049; }
+.logo { width:120px; height:auto; margin:10px; }
 </style>
 <script>
 let activationId = null;
@@ -52,9 +79,9 @@ let countdown = 120;
 function updateTimer() {
     if (countdown > 0) {
         countdown--;
-        document.getElementById("timer").innerText = "Masa tinggal: " + countdown + "s";
+        document.getElementById("timer").innerText = "⏳ Masa tinggal: " + countdown + "s";
     } else {
-        document.getElementById("timer").innerText = "Masa habis!";
+        document.getElementById("timer").innerText = "❌ Masa habis!";
     }
 }
 
@@ -64,15 +91,22 @@ function checkOTP() {
         .then(r => r.json())
         .then(data => {
             if (data.code) {
-                document.getElementById("otp").innerText = "Kod OTP: " + data.code;
+                document.getElementById("otp").innerHTML = 
+                  "✅ Kod OTP: <span style='color:green;font-size:26px'>" + data.code + "</span>" +
+                  "<button class='copy-btn' onclick='copyText(\"" + data.code + "\")'>Copy</button>";
             } else {
-                document.getElementById("otp").innerText = "Sedang tunggu OTP...";
+                document.getElementById("otp").innerText = "⌛ Sedang tunggu OTP...";
             }
         })
         .catch(err => {
-            document.getElementById("otp").innerText = "Ralat semak OTP!";
+            document.getElementById("otp").innerText = "❌ Ralat semak OTP!";
         });
     }
+}
+
+function copyText(txt) {
+    navigator.clipboard.writeText(txt);
+    alert("📋 Disalin: " + txt);
 }
 
 setInterval(updateTimer, 1000);
@@ -80,32 +114,35 @@ setInterval(checkOTP, 15000);
 </script>
 </head>
 <body>
-<h2>Pilih Produk & Masukkan Order ID Shopee</h2>
+<div class="watermark">MR.ROBOT</div>
+
+<h2>📱 Redeem Virtual Number</h2>
 <form method="POST">
-<select name="product_choice" required>
-<option value="">-- Pilih Produk --</option>
-<option value="zus">Zus Coffee</option>
-<option value="tealive">Tealive</option>
-<option value="kfc">KFC</option>
-<option value="chagee">Chagee</option>
-</select>
-<br>
-<input type="text" name="order_sn" placeholder="Order ID Shopee" required>
-<br>
-<button type="submit">Redeem</button>
+    <select name="product_choice" required>
+        <option value="">-- Pilih Produk --</option>
+        <option value="zus">☕ Zus Coffee</option>
+        <option value="tealive">🥤 Tealive</option>
+        <option value="kfc">🍗 KFC</option>
+        <option value="chagee">🧋 Chagee</option>
+    </select>
+    <br>
+    <input type="text" name="order_sn" placeholder="Masukkan Order ID Shopee" required style="width:250px;text-align:center;font-size:18px;">
+    <br>
+    <button type="submit" style="font-size:22px;padding:10px 25px;">🚀 Redeem</button>
 </form>
 
 {% if product %}
 <h3>Produk: {{ product }}</h3>
 {% if logo %}
-<img src="{{ logo }}" alt="{{ product }}" style="width:140px;height:auto;">
+<img src="{{ logo }}" class="logo">
 {% endif %}
 {% endif %}
 
 {% if number %}
-<h3>Nombor Anda: <span style="color:green">{{ number }}</span></h3>
-<p id="otp">Sedang tunggu OTP...</p>
-<p id="timer">Masa tinggal: 120s</p>
+<h3>Nombor Anda: <span style="color:green;font-size:26px">{{ number }}</span>
+<button class="copy-btn" onclick="copyText('{{ number }}')">Copy</button></h3>
+<p id="otp">⌛ Sedang tunggu OTP...</p>
+<p id="timer">⏳ Masa tinggal: 120s</p>
 <script>
 activationId = "{{ activation_id }}";
 checkOTP();
@@ -203,9 +240,7 @@ def redeem():
 
         if not order_info.get("error") and "response" in order_info:
             try:
-                product_name = order_info["response"]["order_list"][0]["item_list"][0]["item_name"].lower()
-                product = product_choice if product_choice else product_name
-
+                product = product_choice
                 service_code = SERVICE_MAP.get(product_choice)
                 if service_code:
                     vnum = get_virtual_number(service=service_code)
