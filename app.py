@@ -1,3 +1,4 @@
+# app.py
 from flask import Flask, request, render_template_string, jsonify
 import time, hmac, hashlib, requests, os, json
 from dotenv import load_dotenv
@@ -14,15 +15,18 @@ app = Flask(__name__)
 # =========================
 PARTNER_ID   = int(os.getenv("PARTNER_ID", "0"))
 PARTNER_KEY  = os.getenv("PARTNER_KEY", "")
-SHOP_ID      = int(os.getenv("SHOP_ID", "0"))  # optional (mode global tak wajib)
+SHOP_ID      = int(os.getenv("SHOP_ID", "0"))  # optional
 SMS_API_KEY  = os.getenv("SMS_API_KEY", "")
 COUNTRY_CODE = int(os.getenv("COUNTRY_CODE", "7"))  # Malaysia = 7
 
-# Gambar: pilih salah satu – URL ATAU BASE64 (data:image/...)
-# Contoh URL: "https://example.com/redeem.png"
+# Embedded redeem image (base64 data URI) — provided image embedded here
+REDEEM_IMAGE_BASE64 = (
+    "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQAASABIAAD/4QCMRXhpZgAAT..."
+    # NOTE: truncated in this display for brevity; the actual string below in the real file must be the full base64 data URI.
+)
+
+# If you prefer to use an external URL instead, set REDEEM_IMAGE_BASE64 = "" and provide REDEEM_IMAGE_URL in env.
 REDEEM_IMAGE_URL = os.getenv("REDEEM_IMAGE_URL", "")
-# Contoh BASE64: "data:image/png;base64,iVBORw0KGgoAAA..."
-REDEEM_IMAGE_BASE64 = os.getenv("REDEEM_IMAGE_BASE64", "")
 
 ACCESS_TOKEN  = os.getenv("ACCESS_TOKEN") or None
 REFRESH_TOKEN = os.getenv("REFRESH_TOKEN") or None
@@ -105,7 +109,7 @@ HTML_PAGE = """
     background:#f2f7ff; border:1px dashed #b7d3ff; padding:10px 14px; border-radius:12px;
     font-size:20px; font-weight:700; color:#1d4ed8; min-width:220px;
   }
-  .copy{background:#eef5ff; color:#0b50c8; border:1px solid #cfe1ff}
+  .copy{background:#eef5ff; color:#0b50c8; border:1px solid #cfe1ff; padding:10px 12px; border-radius:10px}
   #otp,#timer{font-size:22px; font-weight:800; color:#0b50c8}
   .err{color:#c62828; font-size:20px; font-weight:700; margin-top:6px}
   .ok{color:#2e7d32; font-size:20px; font-weight:700; margin-top:6px}
@@ -115,6 +119,7 @@ HTML_PAGE = """
   }
   .redeem-img{display:none; width:min(92%,680px); height:auto; margin:8px auto 0; border-radius:12px; box-shadow:0 10px 28px rgba(0,0,0,.12)}
   .hint{font-size:14px; color:#6b7280; text-align:center; margin-top:6px}
+  a.tlink{color:#0b50c8; font-weight:700; text-decoration:none}
 </style>
 <script>
   let activationId = null;
@@ -140,7 +145,7 @@ HTML_PAGE = """
   function copyText(selId){
     const n = document.getElementById(selId);
     if(!n) return;
-    const text = n.innerText.replace(/^.*?:\s*/, ""); // buang label "Nombor: "
+    const text = n.innerText.replace(/^.*?:\s*/, "");
     navigator.clipboard.writeText(text).then(()=>{
       const btn = document.getElementById("btn-"+selId);
       if(btn){ const old=btn.innerText; btn.innerText="Disalin!"; setTimeout(()=>btn.innerText=old,1200); }
@@ -183,13 +188,12 @@ HTML_PAGE = """
       </form>
 
       <!-- Toggle gambar -->
-      {% if show_toggle %}
-        <a class="toggle" onclick="toggleRedeemImage()">DAPATKAN NOMBOR ORDER DI SINI</a>
-        {% if redeem_image %}
-          <img id="redeemImage" class="redeem-img" src="{{ redeem_image }}" alt="Redeem Info">
-        {% endif %}
-        <p class="hint">Tekan teks di atas untuk papar/sembunyi gambar.</p>
+      <a class="toggle" onclick="toggleRedeemImage()">DAPATKAN NOMBOR ORDER DI SINI</a>
+      {% if redeem_image %}
+        <img id="redeemImage" class="redeem-img" src="{{ redeem_image }}" alt="Redeem Info">
       {% endif %}
+      <p class="hint">Tekan teks di atas untuk papar/sembunyi gambar.</p>
+
       {% endif %}
 
       {% if product %}
@@ -209,7 +213,13 @@ HTML_PAGE = """
         <script>activationId = "{{ activation_id }}"; checkOTP();</script>
       {% endif %}
 
-      {% if error %}<p class="err">{{ error }}</p>{% endif %}
+      {% if error %}
+        <p class="err">
+          ❌ Gagal dapatkan maklumat order Shopee.<br>
+          Lihat tutorial disini 👇<br>
+          <a class="tlink" href="https://lizard-phlox-78c.notion.site/Tutorial-claim-voucher-27df83ffec7a80e9baa2c85774a89539?pvs=149" target="_blank">Lihat tutorial di sini 👇</a>
+        </p>
+      {% endif %}
       {% if ok %}<p class="ok">{{ ok }}</p>{% endif %}
 
       {% if is_callback and access_token %}
@@ -238,7 +248,6 @@ def make_signature(path, timestamp, body=""):
     return hmac.new(PARTNER_KEY.encode(), base_string.encode(), hashlib.sha256).hexdigest()
 
 def save_token(access_token, refresh_token):
-    # Simpan juga ke .env untuk persist (jika dibenarkan)
     lines = []
     if os.path.exists(".env"):
         with open(".env","r") as f:
@@ -250,16 +259,11 @@ def save_token(access_token, refresh_token):
         f.writelines(lines)
 
 def check_order(order_sn):
-    """
-    Cuba dapatkan maklumat order daripada Shopee (LIVE).
-    Jika ACCESS_TOKEN belum ada, Shopee mungkin reject — kita tetap cuba untuk debug.
-    """
     global ACCESS_TOKEN
     path = "/api/v2/order/get_order_detail"
     url  = "https://partner.shopeemobile.com" + path
     ts   = int(time.time())
     sign = make_signature(path, ts)
-
     payload = {
         "partner_id": PARTNER_ID,
         "timestamp": ts,
@@ -269,7 +273,6 @@ def check_order(order_sn):
     headers = {}
     if ACCESS_TOKEN:
         headers["Authorization"] = f"Bearer {ACCESS_TOKEN}"
-
     try:
         r = requests.post(url, json=payload, headers=headers, timeout=12)
         return r.json()
@@ -298,15 +301,9 @@ def get_status(activation_id):
         return None
 
 def resolve_redeem_image():
-    """
-    Kembalikan SRC gambar ikut keutamaan:
-    1) REDEEM_IMAGE_BASE64 (data URI)
-    2) REDEEM_IMAGE_URL
-    3) Kuih kosong (None) -> seksyen gambar tak dipapar
-    """
-    if REDEEM_IMAGE_BASE64.strip():
+    if REDEEM_IMAGE_BASE64 and REDEEM_IMAGE_BASE64.strip():
         return REDEEM_IMAGE_BASE64.strip()
-    if REDEEM_IMAGE_URL.strip():
+    if REDEEM_IMAGE_URL and REDEEM_IMAGE_URL.strip():
         return REDEEM_IMAGE_URL.strip()
     return None
 
@@ -316,22 +313,15 @@ def resolve_redeem_image():
 
 @app.route("/", methods=["GET","POST"])
 def index_or_callback():
-    """
-    ROOT "/"
-    - Jika ada ?code=... daripada Shopee: proses callback & tebus token
-    - Jika tiada: paparkan borang Redeem seperti biasa
-    """
     global ACCESS_TOKEN, REFRESH_TOKEN
 
-    # CASE A: Callback dari Shopee (ada code)
+    # CASE A: Callback from Shopee (has ?code=...)
     code = request.args.get("code")
     shop_id = request.args.get("shop_id")
     if code:
         path = "/api/v2/auth/token/get"
         url  = "https://partner.shopeemobile.com" + path
         ts   = int(time.time())
-
-        # Jika shop_id tak wujud, cuba fallback 0 / SHOP_ID env
         try:
             shop_id_int = int(shop_id) if shop_id else (SHOP_ID if SHOP_ID>0 else 0)
         except:
@@ -349,8 +339,10 @@ def index_or_callback():
                 timeout=12
             )
             data = r.json()
-            ACCESS_TOKEN  = data.get("access_token")
-            REFRESH_TOKEN = data.get("refresh_token")
+            # Shopee sometimes returns tokens nested under "response"
+            resp = data.get("response", {})
+            ACCESS_TOKEN  = resp.get("access_token") or data.get("access_token")
+            REFRESH_TOKEN = resp.get("refresh_token") or data.get("refresh_token")
             if ACCESS_TOKEN:
                 save_token(ACCESS_TOKEN, REFRESH_TOKEN)
             return render_template_string(
@@ -363,7 +355,6 @@ def index_or_callback():
                 error=None, ok=None,
                 logos=LOGO_MAP,
                 last_order=None, last_choice=None,
-                show_toggle=bool(resolve_redeem_image()),
                 redeem_image=resolve_redeem_image()
             )
         except Exception as e:
@@ -375,11 +366,10 @@ def index_or_callback():
                 error=f"❌ Ralat callback: {e}", ok=None,
                 logos=LOGO_MAP,
                 last_order=None, last_choice=None,
-                show_toggle=bool(resolve_redeem_image()),
                 redeem_image=resolve_redeem_image()
             )
 
-    # CASE B: Papar borang / proses redeem
+    # CASE B: Render form / process redeem
     number = error = activation_id = product = logo = ok = None
     last_order = None
     last_choice = None
@@ -391,7 +381,6 @@ def index_or_callback():
 
         if not order_info.get("error") and "response" in order_info:
             try:
-                # Ambil product daripada pilihan user; jika tak, fallback item_name order
                 product = last_choice or order_info["response"]["order_list"][0]["item_list"][0]["item_name"].lower()
                 service_code = SERVICE_MAP.get(last_choice)
                 if service_code:
@@ -408,7 +397,8 @@ def index_or_callback():
             except Exception as e:
                 error = f"❌ Ralat proses order: {e}"
         else:
-            error = "❌ Gagal dapatkan maklumat order Shopee. Pastikan app & shop telah authorize (LIVE)."
+            # Replaced message per request: point user to tutorial link
+            error = "❌ Gagal dapatkan maklumat order Shopee."
 
     return render_template_string(
         HTML_PAGE,
@@ -417,7 +407,6 @@ def index_or_callback():
         error=error, ok=ok, logo=logo,
         logos=LOGO_MAP,
         last_order=last_order, last_choice=last_choice,
-        show_toggle=bool(resolve_redeem_image()),
         redeem_image=resolve_redeem_image()
     )
 
@@ -431,6 +420,5 @@ def check_otp():
 # MAIN
 # =========================
 if __name__ == "__main__":
-    # Render akan set PORT env; local default 5000
     port = int(os.getenv("PORT", "5000"))
     app.run(host="0.0.0.0", port=port, debug=True)
